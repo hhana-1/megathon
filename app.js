@@ -89,6 +89,7 @@ function bindEvents() {
   $("#confirmWalkingMode").addEventListener("click", confirmWalkingMode);
   $("#cancelWalkingMode").addEventListener("click", hideWalkingModeDialog);
   $("#fakeCallNow").addEventListener("click", () => startIncomingCall("manual"));
+  $("#mummyCall").addEventListener("click", handleMummyCall);
   $("#safeButton").addEventListener("click", markSafe);
   $("#confirmSafe").addEventListener("click", markSafe);
   $("#shareLocation").addEventListener("click", captureLocation);
@@ -255,6 +256,7 @@ async function checkSafetyFlag() {
 }
 
 function markSafe() {
+  if (typeof window.stopMummyCall === "function") window.stopMummyCall();
   stopTone();
   stopPromptTimer();
   stopRecording({ discard: true });
@@ -308,7 +310,29 @@ function answerCall() {
   render();
 }
 
+// Start the real Vapi "Mummy" call (in-app WebRTC). Falls back to the simulated
+// incoming-call flow if Vapi isn't configured yet (no public key in vapi.js).
+function handleMummyCall() {
+  unlockAudio();
+  if (typeof window.startMummyCall === "function" && window.vapiConfigured && window.vapiConfigured()) {
+    addHistory("Mum call starting", "Connecting AI companion…");
+    window.startMummyCall().then((started) => {
+      if (!started) startIncomingCall("manual");
+    });
+  } else {
+    startIncomingCall("manual");
+  }
+}
+
+// Called by vapi.js the instant the agent hears the safe word — escalate now.
+window.glimSafeWordDetected = function () {
+  if (state.emergency) return;
+  addHistory("Safe word detected", "Mummy call flagged danger");
+  escalateEmergency();
+};
+
 function endCall() {
+  if (typeof window.stopMummyCall === "function") window.stopMummyCall();
   stopPromptTimer();
   state.callActive = false;
   $("#activeCall").classList.remove("is-visible");

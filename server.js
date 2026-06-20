@@ -31,6 +31,7 @@ const VAPI_SECRET = process.env.VAPI_SERVER_SECRET || "";
 let latestSafetyEvent = null; // { flag, safeWordHeard, callId, at }
 const safetyEventsByCall = new Map();
 const recentIncidents = []; // non-consuming feed for the monitor dashboard (capped)
+const recentRecordings = []; // end-of-call recordings/transcripts (capped)
 
 // Per-user safe word. In-memory + a single "demo" key here; in production store
 // per authenticated user (and treat it as sensitive — knowing it defeats it).
@@ -272,6 +273,57 @@ async function handleSafeWordAudio(req, res, audioBuffer) {
   sendJson(res, 200, { userId, transcript, audioPath });
 }
 
+// Vapi assistant "Server URL" messages — we care about end-of-call-report,
+// which carries the recording URL + transcript once a call finishes.
+async function handleVapiEvents(req, res, body) {
+  if (VAPI_SECRET && req.headers["x-vapi-secret"] !== VAPI_SECRET) {
+    return sendJson(res, 401, { error: "bad_secret" });
+  }
+  const msg = body.message || {};
+
+  if (msg.type === "end-of-call-report") {
+    const callId = msg.call?.id || null;
+    const artifact = msg.artifact || {};
+    const recordingUrl = artifact.recordingUrl || artifact.recording?.url || null;
+    const transcript = artifact.transcript || null;
+
+    const rec = {
+      callId,
+      recordingUrl,
+      transcript,
+      endedReason: msg.endedReason || null,
+      at: new Date().toISOString()
+    };
+    recentRecordings.unshift(rec);
+    if (recentRecordings.length > 20) recentRecordings.length = 20;
+    console.log("📼 end-of-call-report", { callId, hasRecording: !!recordingUrl, transcriptChars: transcript?.length || 0 });
+
+    // Optional: download the audio into Firebase Storage and persist metadata.
+    if (db && recordingUrl && process.env.FIREBASE_STORAGE_BUCKET) {
+      try {
+        const audio = await fetch(recordingUrl);
+        if (audio.ok) {
+          const buf = Buffer.from(await audio.arrayBuffer());
+          const storedPath = `call-recordings/${callId || Date.now()}.wav`;
+          await admin.storage().bucket().file(storedPath).save(buf, { contentType: audio.headers.get("content-type") || "audio/wav" });
+          rec.storedPath = storedPath;
+        }
+      } catch (err) {
+        console.error("recording archive failed:", err.message);
+      }
+    }
+    if (db) {
+      try {
+        await db.collection("call_recordings").add({ ...rec, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+      } catch (err) {
+        console.error("recording persist failed:", err.message);
+      }
+    }
+  }
+
+  sendJson(res, 200, { ok: true });
+}
+
 // Read it back — call this at call start to inject into Vapi variableValues.
 function handleSafeWordGet(req, res) {
   const url = new URL(req.url, "http://localhost");
@@ -356,6 +408,19 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && pathname === "/api/incidents") {
     return sendJson(res, 200, { incidents: recentIncidents });
+  }
+
+  if (req.method === "POST" && pathname === "/vapi/events") {
+    return readJsonBody(req, res, (body) =>
+      handleVapiEvents(req, res, body).catch((err) => {
+        console.error("vapi events handler error:", err.message);
+        if (!res.headersSent) sendJson(res, 500, { error: "events_failed" });
+      })
+    );
+  }
+
+  if (req.method === "GET" && pathname === "/api/recordings") {
+    return sendJson(res, 200, { recordings: recentRecordings });
   }
 
   if (req.method === "POST" && pathname === "/api/safe-word/audio") {

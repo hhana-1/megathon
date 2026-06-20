@@ -102,7 +102,7 @@ The girl's *own* app, by contrast, is already on the call via the Vapi client SD
 {
   "flag": 1,
   "userId": "u42",            // from assistantOverrides.metadata.userId at call start
-  "safeWordHeard": "pineapple",
+  "safeWordHeard": "bestie",
   "callId": "call_xyz",       // Vapi call id
   "source": "vapi",
   "status": "active",
