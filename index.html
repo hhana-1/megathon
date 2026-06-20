@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#090a0f" />
+    <title>Glim Demo</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-stage">
+      <section class="phone-shell" aria-label="Glim mobile app demo">
+        <div class="phone-screen">
+          <header class="status-bar">
+            <span id="clock">9:41</span>
+            <span class="status-icons" aria-hidden="true">
+              <span id="recordDot" class="record-dot"></span>
+              <span class="signal-bars"><i></i><i></i><i></i></span>
+              <span class="battery"></span>
+            </span>
+          </header>
+
+          <section class="screen screen-home is-active" data-screen="home">
+            <div class="topline">
+              <div>
+                <p class="eyebrow">Glim</p>
+                <h1 id="homeTitle">You are protected</h1>
+              </div>
+              <button id="disguiseButton" class="icon-button" type="button" aria-label="Toggle disguise mode" title="Disguise mode">
+                <span class="icon-mask" aria-hidden="true"></span>
+              </button>
+            </div>
+
+            <div id="modePill" class="mode-pill"><span></span> Walking mode off</div>
+
+            <button id="sosButton" class="sos-button" type="button" aria-label="Trigger SOS">
+              <span>SOS</span>
+              <small>hold</small>
+              <b id="holdRing"></b>
+            </button>
+
+            <section class="timer-panel" aria-label="Check-in timer">
+              <div>
+                <p>Check-in timer</p>
+                <strong id="checkinTime">--:--</strong>
+              </div>
+              <button id="safeButton" class="soft-button" type="button">I'm safe</button>
+            </section>
+
+            <section class="quick-grid" aria-label="Quick actions">
+              <button id="protectionToggle" class="action-button action-primary" type="button">
+                <span class="icon-shield" aria-hidden="true"></span>
+                <strong>Start walk</strong>
+              </button>
+              <button id="fakeCallNow" class="action-button" type="button">
+                <span class="icon-phone" aria-hidden="true"></span>
+                <strong>Fake call</strong>
+              </button>
+              <button id="shareLocation" class="action-button" type="button">
+                <span class="icon-pin" aria-hidden="true"></span>
+                <strong>Location</strong>
+              </button>
+              <button id="recordToggle" class="action-button" type="button">
+                <span class="icon-mic" aria-hidden="true"></span>
+                <strong id="recordLabel">Record</strong>
+              </button>
+            </section>
+
+            <section class="contact-strip" aria-label="Trusted contacts">
+              <div class="section-title">
+                <span>Trusted contacts</span>
+                <small id="contactStatus">Ready</small>
+              </div>
+              <div id="homeContacts" class="mini-list"></div>
+            </section>
+          </section>
+
+          <section class="screen" data-screen="contacts">
+            <div class="screen-heading">
+              <p class="eyebrow">Network</p>
+              <h2>Trusted contacts</h2>
+            </div>
+            <div id="contactsList" class="contact-list"></div>
+            <button id="addContact" class="wide-button" type="button">Add demo contact</button>
+          </section>
+
+          <section class="screen" data-screen="history">
+            <div class="screen-heading">
+              <p class="eyebrow">Evidence</p>
+              <h2>Safety history</h2>
+            </div>
+            <div id="historyList" class="history-list"></div>
+          </section>
+
+          <section class="screen" data-screen="settings">
+            <div class="screen-heading">
+              <p class="eyebrow">Control</p>
+              <h2>Settings</h2>
+            </div>
+
+            <div class="settings-list">
+              <label class="setting-row range-row">
+                <span>
+                  <strong>Check-in timer</strong>
+                  <small>1 min to 30 min</small>
+                </span>
+                <b id="timerValue">5 min</b>
+                <input id="timerRange" type="range" min="60" max="1800" step="60" value="300" />
+              </label>
+
+              <label class="setting-row range-row">
+                <span>
+                  <strong>Response window</strong>
+                  <small>Before escalation</small>
+                </span>
+                <b id="responseValue">12 sec</b>
+                <input id="responseRange" type="range" min="8" max="30" step="2" value="12" />
+              </label>
+
+              <label class="setting-row">
+                <span>
+                  <strong>Private audio buffer</strong>
+                  <small>Delete on safe, upload on SOS</small>
+                </span>
+                <input id="autoRecordToggle" class="switch" type="checkbox" checked />
+              </label>
+
+              <label class="setting-row">
+                <span>
+                  <strong>Fake call</strong>
+                  <small>Simulate incoming call</small>
+                </span>
+                <input id="fakeCallToggle" class="switch" type="checkbox" checked />
+              </label>
+
+              <label class="setting-row">
+                <span>
+                  <strong>Contact app alarm</strong>
+                  <small>For app contacts</small>
+                </span>
+                <input id="contactAlarmToggle" class="switch" type="checkbox" checked />
+              </label>
+
+              <label class="setting-row">
+                <span>
+                  <strong>Share live location</strong>
+                  <small>With trusted contacts</small>
+                </span>
+                <input id="locationToggle" class="switch" type="checkbox" checked />
+              </label>
+
+              <label class="setting-row">
+                <span>
+                  <strong>Disguise mode</strong>
+                  <small>Looks like a timer</small>
+                </span>
+                <input id="disguiseToggle" class="switch" type="checkbox" />
+              </label>
+
+              <label class="message-row">
+                <span>SOS message</span>
+                <textarea id="messageText" rows="12">⚠️ [Username] may be in danger.
+
+Their Glim safety app has been triggered.
+
+Before you act:
+1. Try calling them first
+2. Listen to the voice recording below
+3. If you cannot reach them, contact authorities
+
+📍 Last location: [Google Maps link]
+🎙️ Voice recording: [Firebase audio link]
+🕐 Triggered at: [timestamp]
+
+— Glim Safety App</textarea>
+              </label>
+            </div>
+          </section>
+
+          <nav class="tabbar" aria-label="Main navigation">
+            <button class="tab is-active" data-tab="home" type="button"><span class="icon-home" aria-hidden="true"></span>Home</button>
+            <button class="tab" data-tab="contacts" type="button"><span class="icon-people" aria-hidden="true"></span>Contacts</button>
+            <button class="tab" data-tab="history" type="button"><span class="icon-clock" aria-hidden="true"></span>History</button>
+            <button class="tab" data-tab="settings" type="button"><span class="icon-gear" aria-hidden="true"></span>Settings</button>
+          </nav>
+        </div>
+      </section>
+
+      <aside class="demo-console" aria-label="Demo state console">
+        <section class="console-block incident-block">
+          <div class="section-title">
+            <span>Incident flow</span>
+            <small id="incidentState">Idle</small>
+          </div>
+          <ol id="flowSteps" class="flow-steps"></ol>
+        </section>
+
+        <section class="console-block">
+          <div class="section-title">
+            <span>Cloud stream</span>
+            <small id="uploadState">Waiting</small>
+          </div>
+          <div id="cloudLog" class="cloud-log"></div>
+        </section>
+
+        <section class="console-block">
+          <div class="section-title">
+            <span>Contact app alert</span>
+            <small id="alarmState">Standby</small>
+          </div>
+          <div id="companionAlert" class="companion-alert">
+            <span class="alert-light"></span>
+            <div>
+              <strong>No active alarm</strong>
+              <p>Contacts with the app will receive a loud warning state.</p>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <section id="walkingModeDialog" class="overlay modal-overlay" aria-modal="true" role="dialog" aria-labelledby="walkingModeTitle">
+      <div class="modal-card">
+        <h2 id="walkingModeTitle">Walking Mode is now active</h2>
+        <div class="modal-copy">
+          <p>Every few minutes, you will receive a check-in call from Glim.</p>
+          <p><strong>✅ Answer the call</strong> — if you're safe, stay on the line until it ends.</p>
+          <p><strong>❌ Ignore or decline the call</strong> — Glim will immediately notify your emergency contact, start recording, and share your location.</p>
+          <p>Make sure your emergency contact knows they may receive an alert.</p>
+        </div>
+        <div class="modal-actions">
+          <button id="confirmWalkingMode" class="soft-button" type="button">Got it, activate</button>
+          <button id="cancelWalkingMode" class="ghost-button" type="button">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="incomingCall" class="overlay call-overlay" aria-modal="true" role="dialog">
+      <div class="call-card">
+        <span class="avatar">M</span>
+        <p>Incoming call</p>
+        <h2 id="callerName">Mom</h2>
+        <strong id="callCountdown">12</strong>
+        <div class="call-actions">
+          <button id="declineCall" class="round-action danger" type="button" aria-label="Do not answer">
+            <span class="icon-phone-down" aria-hidden="true"></span>
+          </button>
+          <button id="answerCall" class="round-action accept" type="button" aria-label="Answer call">
+            <span class="icon-phone" aria-hidden="true"></span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section id="activeCall" class="overlay active-call" aria-modal="true" role="dialog">
+      <div class="active-call-inner">
+        <span class="avatar large">M</span>
+        <p>Connected</p>
+        <h2 id="activeCaller">Mom</h2>
+        <strong id="callTimer">00:00</strong>
+        <div id="voicePrompt" class="voice-prompt">Hey, I am staying on the phone with you.</div>
+        <button id="endCall" class="soft-button" type="button">End call</button>
+      </div>
+    </section>
+
+    <section id="alertOverlay" class="overlay emergency-overlay" aria-modal="true" role="dialog">
+      <div class="warning-mark" aria-hidden="true">!</div>
+      <p>No response detected</p>
+      <h2 id="alertTitle">Are you safe?</h2>
+      <strong id="alertCountdown">12</strong>
+      <span>seconds</span>
+      <button id="confirmSafe" class="safe-confirm" type="button">I'm safe</button>
+      <ul class="alert-facts">
+        <li>Location ready for trusted contacts</li>
+        <li>Private audio buffer will upload on SOS</li>
+      </ul>
+    </section>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>

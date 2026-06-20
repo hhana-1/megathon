@@ -1,0 +1,17 @@
+{
+  "name": "Glim Demo",
+  "short_name": "Glim",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#090a0f",
+  "theme_color": "#090a0f",
+  "description": "A hackathon demo for timed fake calls, safety checks, emergency alerts, and audio evidence upload.",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
