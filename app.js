@@ -48,6 +48,8 @@ let recordingStopPolicy = null;
 let audioContext = null;
 let toneTimer = null;
 let promptTimer = null;
+let callConversation = [];
+let safetyPollTimer = null;
 
 const flow = [
   "Protection mode starts",
@@ -212,13 +214,42 @@ function toggleProtection() {
   if (state.protection) {
     addHistory("Walking mode on", "Check-in timer started");
     if (state.settings.autoRecord) startRecording("buffer");
+    startSafetyPoll();
   } else {
     addHistory("Walking mode off", "Protection paused");
     stopRecording({ discard: true });
+    stopSafetyPoll();
     clearAlertState();
   }
 
   render();
+}
+
+// Watch the backend for a safe-word flag raised by the Vapi "Mummy" call.
+// When the agent calls trigger_safety_flag, escalate to trusted contacts.
+function startSafetyPoll() {
+  stopSafetyPoll();
+  safetyPollTimer = window.setInterval(checkSafetyFlag, 2500);
+}
+
+function stopSafetyPoll() {
+  window.clearInterval(safetyPollTimer);
+  safetyPollTimer = null;
+}
+
+async function checkSafetyFlag() {
+  if (state.emergency) return; // already escalated
+  try {
+    const response = await fetch("/api/safety-flag");
+    if (!response.ok) return;
+    const data = await response.json();
+    if (data.flag === 1) {
+      addHistory("Safe word detected", "Mummy call flagged danger");
+      escalateEmergency();
+    }
+  } catch {
+    // backend unreachable — ignore, demo continues without Vapi
+  }
 }
 
 function markSafe() {
@@ -236,6 +267,7 @@ function markSafe() {
   if (state.protection) {
     state.checkInRemaining = state.checkInTotal;
     if (state.settings.autoRecord) startRecording("buffer");
+    startSafetyPoll();
   }
 
   $("#incomingCall").classList.remove("is-visible");
@@ -268,8 +300,9 @@ function answerCall() {
   $("#incomingCall").classList.remove("is-visible");
   $("#activeCall").classList.add("is-visible");
   addHistory("Fake call answered", "Companion voice connected");
-  speakPrompt();
-  promptTimer = window.setInterval(speakPrompt, 7000);
+  callConversation = [];
+  speakPrompt("answered");
+  promptTimer = window.setInterval(() => speakPrompt("checkin"), 9000);
   render();
 }
 
@@ -548,8 +581,35 @@ function setDisguise(enabled) {
   render();
 }
 
-function speakPrompt() {
-  const text = prompts[Math.floor(Math.random() * prompts.length)];
+async function speakPrompt(event) {
+  const text = await fetchMumLine(event);
+  if (!state.callActive) return; // call ended while we were waiting
+  callConversation.push(text);
+  sayLine(text);
+}
+
+async function fetchMumLine(event) {
+  try {
+    const response = await fetch("/api/mum-call", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        caller: chooseCaller().name,
+        event: event || "checkin",
+        spoken: callConversation
+      })
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    if (data.reply) return data.reply;
+    throw new Error("empty reply");
+  } catch (err) {
+    // Offline / no backend / API error: fall back to the static demo lines.
+    return prompts[Math.floor(Math.random() * prompts.length)];
+  }
+}
+
+function sayLine(text) {
   $("#voicePrompt").textContent = text;
 
   if ("speechSynthesis" in window) {

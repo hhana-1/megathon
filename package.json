@@ -1,0 +1,13 @@
+{
+  "name": "glim-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Glim women-safety demo with an AI-backed mum mockup call.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.105.0"
+  }
+}
