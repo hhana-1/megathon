@@ -55,6 +55,103 @@ When the live Vapi "Mummy" call is used, the agent detects the predefined safe w
 
 Local dev: Vapi must reach `/vapi/tools` over public HTTPS — tunnel with `ngrok http 4173` and use the `https://…ngrok…/vapi/tools` URL.
 
+## Safe word
+
+The safe word is configured by the user and passed to Vapi at call start as `variableValues.SAFE_WORD` — Vapi/the agent never stores it, so the app must supply it each call.
+
+- `POST /api/safe-word` — body `{ userId?, safeWord }`, saves it.
+- `GET /api/safe-word?userId=…` — returns `{ userId, safeWord }`; read this at call start and inject it into `variableValues.SAFE_WORD`.
+
+In-memory + a single `demo` user here; persist per authenticated user in production and treat the word as sensitive (knowing it defeats it).
+
+### Setting the safe word by voice
+
+Vapi detects the safe word from **transcribed text**, not audio — so you never send a recording to Vapi, you send the *word as text*. To let users set it by voice, the app records them saying it and transcribes it server-side with **Deepgram (the same engine Vapi uses live)**, so the stored text matches what Vapi will hear for that user's voice.
+
+- `POST /api/safe-word/audio` — raw audio body (e.g. `Content-Type: audio/webm`). Forwards to Deepgram, returns `{ transcript, audioPath }`. The app shows the transcript, then saves it via `POST /api/safe-word`.
+- Settings → **Safe word (voice)** records ~3.5s, transcribes, and stores the heard word.
+
+```bash
+export DEEPGRAM_API_KEY=...           # required for /api/safe-word/audio
+export DEEPGRAM_MODEL=nova-3          # optional — set the SAME model in Vapi's transcriber
+export FIREBASE_STORAGE_BUCKET=...    # optional — archive the clip in Firebase Storage
+```
+
+Match `DEEPGRAM_MODEL` to the transcriber model configured on your Vapi assistant so the stored text and the live transcript agree. At call start, inject the stored word into Vapi as `variableValues.SAFE_WORD`.
+
+## Emergency escalation (server → Firestore → contact)
+
+Detection happens **inside the Vapi call** (speech-to-text → the LLM watching for `{{SAFE_WORD}}`). But two different parties need to find out, and they have different requirements:
+
+```
+Vapi hears safe word ─┬─▶ client SDK event ──▶ girl's app reacts instantly (UI, recording)
+                      │
+                      └─▶ trigger_safety_flag tool ──▶ /vapi/tools (server, Admin SDK)
+                                                            └─▶ Firestore incident doc
+                                                                  ├─▶ notify emergency contact (SMS/call)
+                                                                  └─▶ contact's app: onSnapshot ──▶ alert
+```
+
+**Why the contact path is server-side.** Notifying *another person* — SMS, push, an outbound call — must come from the backend, not the girl's phone: it has to still work if her phone is grabbed or locked, and you don't put Twilio/contact keys in a client. So the Vapi `trigger_safety_flag` tool calls `POST /vapi/tools`, and the server (Firebase Admin SDK) writes an **incident document** to Firestore. The contact's device/dashboard is subscribed with `onSnapshot` (or notified via FCM) and alerts the instant the doc appears.
+
+The girl's *own* app, by contrast, is already on the call via the Vapi client SDK, so it reacts instantly to the tool-call event with no server round trip.
+
+### Incident document (`incidents` collection)
+
+```jsonc
+{
+  "flag": 1,
+  "userId": "u42",            // from assistantOverrides.metadata.userId at call start
+  "safeWordHeard": "pineapple",
+  "callId": "call_xyz",       // Vapi call id
+  "source": "vapi",
+  "status": "active",
+  "at": "2026-06-20T20:00:56.791Z",
+  "createdAt": "<serverTimestamp>"
+}
+```
+
+The app should set `assistantOverrides.metadata = { userId }` when starting the Vapi call so the webhook can attribute the incident to the right user.
+
+### Server setup
+
+Provide a Firebase service-account key one of two ways (the server runs the in-memory demo path if neither is set, so it never hard-fails):
+
+```bash
+export FIREBASE_SERVICE_ACCOUNT=/path/to/serviceAccount.json
+# or, standard Google Application Default Credentials:
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/serviceAccount.json
+```
+
+### Contact side (listener)
+
+The contact's app/dashboard subscribes to active incidents for the people it watches:
+
+```js
+import { collection, query, where, onSnapshot } from "firebase/firestore";
+
+const q = query(collection(db, "incidents"), where("status", "==", "active"));
+onSnapshot(q, (snap) => {
+  snap.docChanges().forEach((change) => {
+    if (change.type === "added") alertContact(change.doc.data()); // ring, map, etc.
+  });
+});
+```
+
+### Outbound SMS / call
+
+`notifyEmergencyContact()` in [server.js](server.js) is the hook for outbound SMS or a Vapi outbound call (Twilio etc.). It's env-gated and left as a `TODO` — the Firestore write is already the contact-app channel, so add outbound only when you wire those credentials.
+
+### Live monitor (demo)
+
+Open **`/monitor.html`** during a call to watch `trigger_safety_flag` events arrive in real time — handy for judging/testing. It polls `GET /api/incidents` (a non-consuming feed, so it won't steal the flag from the app's `/api/safety-flag` poller).
+
+### Production notes
+
+- **Security rules:** lock `incidents` so a user can only read incidents where they're an authorized contact; only the Admin SDK (server) writes them. Never allow open client writes.
+- **Resolve incidents:** add a flow to flip `status` to `resolved` when the girl marks safe, so contact apps can clear the alert.
+- **Audio evidence:** pair this with Firebase Storage for the recorded audio and reference the file URL on the incident doc.
+
 ## Demo Script
 
 1. Press `Start walk`.

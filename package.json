@@ -8,6 +8,7 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.105.0"
+    "@anthropic-ai/sdk": "^0.105.0",
+    "firebase-admin": "^14.0.0"
   }
 }

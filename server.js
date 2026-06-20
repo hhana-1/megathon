@@ -15,6 +15,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const Anthropic = require("@anthropic-ai/sdk");
+const admin = require("firebase-admin");
 
 const PORT = process.env.PORT || 4173;
 const ROOT = __dirname;
@@ -29,6 +30,52 @@ const VAPI_SECRET = process.env.VAPI_SERVER_SECRET || "";
 // (Firestore/Supabase/etc.) and push to the device instead of polling.
 let latestSafetyEvent = null; // { flag, safeWordHeard, callId, at }
 const safetyEventsByCall = new Map();
+const recentIncidents = []; // non-consuming feed for the monitor dashboard (capped)
+
+// Per-user safe word. In-memory + a single "demo" key here; in production store
+// per authenticated user (and treat it as sensitive — knowing it defeats it).
+const safeWords = new Map(); // userId -> safeWord
+const DEFAULT_USER = "demo";
+
+// Firebase Admin — for writing incident docs the emergency contact's device
+// listens to (onSnapshot / FCM). Optional: with no credentials the server still
+// runs the in-memory demo path. Provide a service-account key one of two ways:
+//   FIREBASE_SERVICE_ACCOUNT=/path/to/serviceAccount.json
+//   GOOGLE_APPLICATION_CREDENTIALS=/path/to/serviceAccount.json  (ADC)
+let db = null;
+try {
+  const saPath = process.env.FIREBASE_SERVICE_ACCOUNT;
+  const opts = {};
+  if (saPath) opts.credential = admin.credential.cert(require(path.resolve(saPath)));
+  if (process.env.FIREBASE_STORAGE_BUCKET) opts.storageBucket = process.env.FIREBASE_STORAGE_BUCKET;
+  if (saPath || process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    admin.initializeApp(opts); // ADC when no explicit credential
+    db = admin.firestore();
+  }
+} catch (err) {
+  console.error("Firebase init failed:", err.message);
+  db = null;
+}
+
+// Write the incident the contact's app/dashboard listens to. Returns the doc id.
+async function writeIncident(incident) {
+  if (!db) return null;
+  const ref = await db.collection("incidents").add({
+    ...incident,
+    status: "active",
+    createdAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+  return ref.id;
+}
+
+// Reach the emergency contact from the SERVER (works even if her phone is taken).
+// The Firestore doc above already pushes to the contact's app via onSnapshot/FCM.
+// Add outbound SMS / call here (Twilio, or a Vapi outbound call) — env-gated so
+// it stays a no-op until you wire credentials.
+async function notifyEmergencyContact(incident) {
+  // TODO: if (process.env.TWILIO_ACCOUNT_SID) { ...send SMS / place call... }
+  console.log("📣 notifyEmergencyContact (Firestore doc is the contact channel):", incident.incidentId || "(no-db)");
+}
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -97,7 +144,7 @@ async function handleMumCall(req, res, body) {
 
 // Vapi calls this when the assistant detects the safe word and invokes the
 // `trigger_safety_flag` tool. Vapi expects: { results: [{ toolCallId, result }] }.
-function handleVapiTool(req, res, body) {
+async function handleVapiTool(req, res, body) {
   if (VAPI_SECRET && req.headers["x-vapi-secret"] !== VAPI_SECRET) {
     return sendJson(res, 401, { error: "bad_secret" });
   }
@@ -106,6 +153,8 @@ function handleVapiTool(req, res, body) {
   // Vapi has shipped a couple of shapes; accept both.
   const calls = msg.toolCallList || msg.toolCalls || [];
   const callId = (msg.call && msg.call.id) || null;
+  // The app should set assistantOverrides.metadata = { userId } when starting the call.
+  const callMeta = (msg.call && msg.call.metadata) || {};
 
   const results = [];
   for (const call of calls) {
@@ -117,20 +166,36 @@ function handleVapiTool(req, res, body) {
       try { args = JSON.parse(args); } catch { args = {}; }
     }
 
+    const userId = callMeta.userId || args.userId || DEFAULT_USER;
     const event = {
       flag: 1,
+      userId,
       safeWordHeard: args.safeWordHeard || null,
       callId,
+      source: "vapi",
       at: new Date().toISOString()
     };
+
+    // Girl's-app instant path (in-memory poll / her own device).
     latestSafetyEvent = event;
     if (callId) safetyEventsByCall.set(callId, event);
+    recentIncidents.unshift(event); // viewer feed (non-consuming)
+    if (recentIncidents.length > 20) recentIncidents.length = 20;
     console.log("🚨 safe word flag raised", event);
+
+    // Contact-side path: durable incident in Firestore + outbound notify.
+    try {
+      const incidentId = await writeIncident(event);
+      if (incidentId) event.incidentId = incidentId;
+      await notifyEmergencyContact({ ...event, incidentId });
+    } catch (err) {
+      console.error("incident write/notify failed:", err.message);
+      // Still ack the tool so Vapi doesn't retry-storm; the in-memory flag stands.
+    }
 
     results.push({ toolCallId: call.id, result: { ok: true } });
   }
 
-  if (!results.length) return sendJson(res, 200, { results: [] });
   sendJson(res, 200, { results });
 }
 
@@ -150,6 +215,68 @@ function handleSafetyFlagPoll(req, res) {
   }
 
   sendJson(res, 200, event ? event : { flag: 0 });
+}
+
+// Save the user's chosen safe word.
+function handleSafeWordSet(req, res, body) {
+  const userId = (body.userId || DEFAULT_USER).toString();
+  const safeWord = (body.safeWord || "").toString().trim();
+  if (!safeWord) return sendJson(res, 400, { error: "missing_safe_word" });
+  if (safeWord.length > 40) return sendJson(res, 400, { error: "too_long" });
+  safeWords.set(userId, safeWord);
+  sendJson(res, 200, { ok: true, userId, safeWord });
+}
+
+// Transcribe a recording of the user saying their safe word, using Deepgram —
+// the same engine Vapi uses live, so the stored text matches what Vapi will hear.
+// Returns the transcript for the app to CONFIRM, then it POSTs /api/safe-word.
+async function handleSafeWordAudio(req, res, audioBuffer) {
+  const apiKey = process.env.DEEPGRAM_API_KEY;
+  if (!apiKey) return sendJson(res, 501, { error: "deepgram_not_configured" });
+  if (!audioBuffer || !audioBuffer.length) return sendJson(res, 400, { error: "no_audio" });
+
+  const url = new URL(req.url, "http://localhost");
+  const userId = url.searchParams.get("userId") || DEFAULT_USER;
+  const contentType = req.headers["content-type"] || "audio/webm";
+  const model = process.env.DEEPGRAM_MODEL || "nova-3"; // match this in Vapi's transcriber
+
+  let transcript = "";
+  try {
+    const dg = await fetch(
+      `https://api.deepgram.com/v1/listen?model=${model}&punctuate=false&smart_format=false`,
+      { method: "POST", headers: { Authorization: `Token ${apiKey}`, "Content-Type": contentType }, body: audioBuffer }
+    );
+    if (!dg.ok) {
+      console.error("Deepgram error:", dg.status, await dg.text());
+      return sendJson(res, 502, { error: "transcription_failed" });
+    }
+    const data = await dg.json();
+    transcript = (data.results?.channels?.[0]?.alternatives?.[0]?.transcript || "").trim();
+  } catch (err) {
+    console.error("Deepgram request failed:", err.message);
+    return sendJson(res, 502, { error: "transcription_failed" });
+  }
+
+  // Optionally archive the clip for reference (audit / re-listen).
+  let audioPath = null;
+  if (db && process.env.FIREBASE_STORAGE_BUCKET) {
+    try {
+      audioPath = `safe-word-audio/${userId}-${Date.now()}.webm`;
+      await admin.storage().bucket().file(audioPath).save(audioBuffer, { contentType });
+    } catch (err) {
+      console.error("audio archive failed:", err.message);
+      audioPath = null;
+    }
+  }
+
+  sendJson(res, 200, { userId, transcript, audioPath });
+}
+
+// Read it back — call this at call start to inject into Vapi variableValues.
+function handleSafeWordGet(req, res) {
+  const url = new URL(req.url, "http://localhost");
+  const userId = url.searchParams.get("userId") || DEFAULT_USER;
+  sendJson(res, 200, { userId, safeWord: safeWords.get(userId) || null });
 }
 
 function sendJson(res, status, payload) {
@@ -196,6 +323,17 @@ function readJsonBody(req, res, onBody) {
   });
 }
 
+function readRawBody(req, res, onBody) {
+  const chunks = [];
+  let size = 0;
+  req.on("data", (chunk) => {
+    size += chunk.length;
+    if (size > 5e6) return req.destroy(); // cap audio at ~5MB
+    chunks.push(chunk);
+  });
+  req.on("end", () => onBody(Buffer.concat(chunks)));
+}
+
 const server = http.createServer((req, res) => {
   const pathname = req.url.split("?")[0];
 
@@ -204,11 +342,37 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/vapi/tools") {
-    return readJsonBody(req, res, (body) => handleVapiTool(req, res, body));
+    return readJsonBody(req, res, (body) =>
+      handleVapiTool(req, res, body).catch((err) => {
+        console.error("vapi tool handler error:", err.message);
+        if (!res.headersSent) sendJson(res, 500, { error: "tool_failed" });
+      })
+    );
   }
 
   if (req.method === "GET" && pathname === "/api/safety-flag") {
     return handleSafetyFlagPoll(req, res);
+  }
+
+  if (req.method === "GET" && pathname === "/api/incidents") {
+    return sendJson(res, 200, { incidents: recentIncidents });
+  }
+
+  if (req.method === "POST" && pathname === "/api/safe-word/audio") {
+    return readRawBody(req, res, (buf) =>
+      handleSafeWordAudio(req, res, buf).catch((err) => {
+        console.error("safe-word audio error:", err.message);
+        if (!res.headersSent) sendJson(res, 500, { error: "audio_failed" });
+      })
+    );
+  }
+
+  if (req.method === "POST" && pathname === "/api/safe-word") {
+    return readJsonBody(req, res, (body) => handleSafeWordSet(req, res, body));
+  }
+
+  if (req.method === "GET" && pathname === "/api/safe-word") {
+    return handleSafeWordGet(req, res);
   }
 
   if (req.method === "GET") return serveStatic(req, res);

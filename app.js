@@ -70,6 +70,7 @@ const prompts = [
 function init() {
   bindEvents();
   hydrateSettings();
+  loadSafeWord();
   addHistory("Demo ready", "Set up Glim prototype");
   render();
   ticker = window.setInterval(tick, 1000);
@@ -92,6 +93,7 @@ function bindEvents() {
   $("#confirmSafe").addEventListener("click", markSafe);
   $("#shareLocation").addEventListener("click", captureLocation);
   $("#recordToggle").addEventListener("click", toggleRecording);
+  $("#recordSafeWord").addEventListener("click", recordSafeWord);
   $("#answerCall").addEventListener("click", answerCall);
   $("#declineCall").addEventListener("click", () => beginSafetyCheck("call_declined"));
   $("#endCall").addEventListener("click", endCall);
@@ -505,6 +507,83 @@ function discardEvidenceBuffer() {
 function chooseMimeType() {
   const types = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
   return types.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+// Record the user saying their safe word, transcribe it server-side (Deepgram),
+// and store the heard text. That text is what you inject into Vapi as SAFE_WORD.
+async function recordSafeWord() {
+  const label = $("#safeWordValue");
+  if (!navigator.mediaDevices || !window.MediaRecorder) {
+    label.textContent = "Recording not supported on this browser";
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mimeType = chooseMimeType();
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    const chunks = [];
+
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size) chunks.push(event.data);
+    };
+    recorder.onstop = () => {
+      stream.getTracks().forEach((track) => track.stop());
+      const blob = new Blob(chunks, { type: mimeType || "audio/webm" });
+      uploadSafeWordAudio(blob);
+    };
+
+    label.textContent = "Listening… say your safe word";
+    recorder.start();
+    window.setTimeout(() => {
+      if (recorder.state !== "inactive") recorder.stop();
+    }, 3500);
+  } catch (err) {
+    label.textContent = "Microphone unavailable";
+  }
+}
+
+async function uploadSafeWordAudio(blob) {
+  const label = $("#safeWordValue");
+  label.textContent = "Transcribing…";
+  try {
+    const transcribe = await fetch("/api/safe-word/audio", {
+      method: "POST",
+      headers: { "Content-Type": blob.type || "audio/webm" },
+      body: blob
+    });
+    const data = await transcribe.json();
+
+    if (transcribe.status === 501) {
+      label.textContent = "Transcription not configured on the server";
+      return;
+    }
+    const word = (data.transcript || "").trim().toLowerCase();
+    if (!transcribe.ok || !word) {
+      label.textContent = "Didn't catch a word — tap Record to retry";
+      return;
+    }
+
+    await fetch("/api/safe-word", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ safeWord: word })
+    });
+    label.textContent = `Safe word: "${word}" (tap Record to change)`;
+    addHistory("Safe word set", `Heard as "${word}"`);
+  } catch (err) {
+    label.textContent = "Couldn't reach the server";
+  }
+}
+
+async function loadSafeWord() {
+  try {
+    const response = await fetch("/api/safe-word");
+    if (!response.ok) return;
+    const data = await response.json();
+    if (data.safeWord) $("#safeWordValue").textContent = `Safe word: "${data.safeWord}" (tap Record to change)`;
+  } catch {
+    // server not running (static-only mode) — leave "Not set"
+  }
 }
 
 function uploadEvidence(size, type) {
