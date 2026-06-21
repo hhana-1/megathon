@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: glim-demo
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: VAPI_PUBLIC_KEY
+        sync: false
+      - key: VAPI_SERVER_SECRET
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: FIREBASE_STORAGE_BUCKET
+        sync: false
+      # Points at the Secret File you add manually after the service is
+      # created: Dashboard -> Environment -> Secret Files -> add a file at
+      # this exact path with your serviceAccount.json contents.
+      - key: FIREBASE_SERVICE_ACCOUNT
+        value: /etc/secrets/serviceAccount.json
