@@ -20,6 +20,9 @@ const state = {
   localBufferBytes: 0,
   uploadCount: 0,
   locationText: "Location ready",
+  lastLat: null,
+  lastLng: null,
+  lastLocationAt: null,
   disguise: false,
   settings: {
     autoRecord: true,
@@ -90,10 +93,12 @@ function bindEvents() {
   $("#cancelWalkingMode").addEventListener("click", hideWalkingModeDialog);
   $("#fakeCallNow").addEventListener("click", () => startIncomingCall("manual"));
   $("#mummyCall").addEventListener("click", handleMummyCall);
+  $("#habibiCall").addEventListener("click", handleHabibiCall);
   $("#safeButton").addEventListener("click", markSafe);
   $("#confirmSafe").addEventListener("click", markSafe);
   $("#shareLocation").addEventListener("click", captureLocation);
   $("#backFromLocation").addEventListener("click", () => $("#locationScreen").classList.remove("is-visible"));
+  $("#downloadReport").addEventListener("click", downloadReport);
   $("#recordToggle").addEventListener("click", toggleRecording);
   $("#recordSafeWord").addEventListener("click", recordSafeWord);
   $("#answerCall").addEventListener("click", answerCall);
@@ -185,6 +190,7 @@ function tick() {
 
 function setScreen(screen) {
   state.screen = screen;
+  if (screen === "history") renderReportPreview();
   render();
 }
 
@@ -258,6 +264,7 @@ async function checkSafetyFlag() {
 
 function markSafe() {
   if (typeof window.stopMummyCall === "function") window.stopMummyCall();
+  if (typeof window.stopHabibiCall === "function") window.stopHabibiCall();
   stopTone();
   stopPromptTimer();
   stopRecording({ discard: true });
@@ -311,9 +318,9 @@ function answerCall() {
   render();
 }
 
-// Start the real Vapi "Mummy" call (in-app WebRTC). Falls back to the simulated
+// Start a real Vapi companion call (in-app WebRTC). Falls back to the simulated
 // incoming-call flow if Vapi isn't configured (no VAPI_PUBLIC_KEY in .env).
-// startMummyCall() awaits its own config fetch, so no race with page load here.
+// start*Call() awaits its own config fetch, so no race with page load here.
 function handleMummyCall() {
   unlockAudio();
   if (typeof window.startMummyCall === "function") {
@@ -326,15 +333,28 @@ function handleMummyCall() {
   }
 }
 
+function handleHabibiCall() {
+  unlockAudio();
+  if (typeof window.startHabibiCall === "function") {
+    addHistory("Habibi call starting", "Connecting AI companion…");
+    window.startHabibiCall().then((started) => {
+      if (!started) startIncomingCall("manual");
+    });
+  } else {
+    startIncomingCall("manual");
+  }
+}
+
 // Called by vapi.js the instant the agent hears the safe word — escalate now.
 window.glimSafeWordDetected = function () {
   if (state.emergency) return;
-  addHistory("Safe word detected", "Mummy call flagged danger");
+  addHistory("Safe word detected", "Companion call flagged danger");
   escalateEmergency();
 };
 
 function endCall() {
   if (typeof window.stopMummyCall === "function") window.stopMummyCall();
+  if (typeof window.stopHabibiCall === "function") window.stopHabibiCall();
   stopPromptTimer();
   state.callActive = false;
   $("#activeCall").classList.remove("is-visible");
@@ -656,6 +676,9 @@ function captureLocation() {
 // Shows the full-screen coordinate readout and persists the fix to the
 // database (so trusted contacts/incident records have a durable copy).
 function showLocationScreen(lat, lng) {
+  state.lastLat = lat;
+  state.lastLng = lng;
+  state.lastLocationAt = new Date().toISOString();
   $("#locationCoords").textContent = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
   $("#locationScreen").classList.add("is-visible");
   saveLocation(lat, lng);
@@ -671,6 +694,50 @@ async function saveLocation(lat, lng) {
   } catch {
     // server unreachable — location still shown on screen, just not persisted
   }
+}
+
+// Bundles the latest Vapi call transcript with the last captured GPS fix.
+// Shared by the in-app preview (History tab) and the .txt download.
+async function buildReportLines() {
+  let latest = null;
+  try {
+    const response = await fetch("/api/recordings");
+    const data = await response.json();
+    latest = (data.recordings || [])[0] || null;
+  } catch {
+    // server unreachable — still produce a report with whatever we have locally
+  }
+
+  return [
+    "Glim safety report",
+    `Generated: ${new Date().toISOString()}`,
+    "",
+    "— Call transcript —",
+    latest ? `Call ended: ${latest.endedReason || "unknown"} at ${latest.at}` : "No call transcript available yet.",
+    latest ? latest.transcript || "(no transcript text)" : "",
+    "",
+    "— Last known location —",
+    state.lastLat != null
+      ? `${state.lastLat.toFixed(5)}, ${state.lastLng.toFixed(5)} captured at ${state.lastLocationAt}`
+      : "Location not captured yet — tap Location on the home screen first."
+  ];
+}
+
+// Renders the same report text directly in the History tab.
+async function renderReportPreview() {
+  const lines = await buildReportLines();
+  $("#reportPreview").textContent = lines.join("\n");
+}
+
+async function downloadReport() {
+  const lines = await buildReportLines();
+  const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `glim-report-${Date.now()}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function addDemoContact() {
