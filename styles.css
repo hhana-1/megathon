@@ -1061,6 +1061,13 @@ textarea {
   background: var(--accent-2);
 }
 
+.location-coords {
+  font-size: 32px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
 .voice-prompt {
   width: 100%;
   min-height: 78px;

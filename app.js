@@ -93,6 +93,7 @@ function bindEvents() {
   $("#safeButton").addEventListener("click", markSafe);
   $("#confirmSafe").addEventListener("click", markSafe);
   $("#shareLocation").addEventListener("click", captureLocation);
+  $("#backFromLocation").addEventListener("click", () => $("#locationScreen").classList.remove("is-visible"));
   $("#recordToggle").addEventListener("click", toggleRecording);
   $("#recordSafeWord").addEventListener("click", recordSafeWord);
   $("#answerCall").addEventListener("click", answerCall);
@@ -311,10 +312,11 @@ function answerCall() {
 }
 
 // Start the real Vapi "Mummy" call (in-app WebRTC). Falls back to the simulated
-// incoming-call flow if Vapi isn't configured yet (no public key in vapi.js).
+// incoming-call flow if Vapi isn't configured (no VAPI_PUBLIC_KEY in .env).
+// startMummyCall() awaits its own config fetch, so no race with page load here.
 function handleMummyCall() {
   unlockAudio();
-  if (typeof window.startMummyCall === "function" && window.vapiConfigured && window.vapiConfigured()) {
+  if (typeof window.startMummyCall === "function") {
     addHistory("Mum call starting", "Connecting AI companion…");
     window.startMummyCall().then((started) => {
       if (!started) startIncomingCall("manual");
@@ -627,25 +629,48 @@ function captureLocation() {
   if (!navigator.geolocation) {
     state.locationText = "Demo location: 52.3676, 4.9041";
     addHistory("Location ready", state.locationText);
+    showLocationScreen(52.3676, 4.9041);
     render();
     return;
   }
 
   navigator.geolocation.getCurrentPosition(
     (position) => {
-      const lat = position.coords.latitude.toFixed(5);
-      const lng = position.coords.longitude.toFixed(5);
-      state.locationText = `${lat}, ${lng}`;
+      const lat = position.coords.latitude;
+      const lng = position.coords.longitude;
+      state.locationText = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
       addHistory("Location ready", state.locationText);
+      showLocationScreen(lat, lng);
       render();
     },
     () => {
       state.locationText = "Demo location: 52.3676, 4.9041";
       addHistory("Location ready", state.locationText);
+      showLocationScreen(52.3676, 4.9041);
       render();
     },
     { enableHighAccuracy: true, timeout: 5000, maximumAge: 5000 }
   );
+}
+
+// Shows the full-screen coordinate readout and persists the fix to the
+// database (so trusted contacts/incident records have a durable copy).
+function showLocationScreen(lat, lng) {
+  $("#locationCoords").textContent = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+  $("#locationScreen").classList.add("is-visible");
+  saveLocation(lat, lng);
+}
+
+async function saveLocation(lat, lng) {
+  try {
+    await fetch("/api/location", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: DEFAULT_USER, lat, lng })
+    });
+  } catch {
+    // server unreachable — location still shown on screen, just not persisted
+  }
 }
 
 function addDemoContact() {

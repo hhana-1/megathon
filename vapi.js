@@ -1,22 +1,32 @@
 // Vapi Web SDK integration — runs the "Mummy" companion call in-app (WebRTC).
 // Loaded as an ES module (no build step) from the esm.sh CDN.
 //
-// ▶ ONE thing to fill in: your Vapi PUBLIC key.
-//   Vapi dashboard → Account / API Keys → copy the PUBLIC key (safe in a browser).
-//   Paste it below. The assistant ID is already your "Mummy Safety Call" agent.
+// The public key lives server-side in .env (VAPI_PUBLIC_KEY) and is fetched
+// from /api/config below — never hardcoded here, so it doesn't end up
+// committed to source control.
 
 import Vapi from "https://esm.sh/@vapi-ai/web@2.5.2";
 
-const VAPI_PUBLIC_KEY = "ff25f71c-4646-4979-873d-f0442bcc000c";
 const ASSISTANT_ID = "9788099c-ce08-4e1c-961f-4bd1b4cb1c65";
 const USER_ID = "demo"; // swap for your real authenticated user id
 
-const configured = VAPI_PUBLIC_KEY && !VAPI_PUBLIC_KEY.startsWith("PASTE");
+let vapiPublicKey = null;
 let vapi = null;
+
+// Kick off immediately so the key is loaded well before the user taps the button.
+const configLoaded = (async () => {
+  try {
+    const res = await fetch("/api/config");
+    const data = await res.json();
+    vapiPublicKey = data.vapiPublicKey || null;
+  } catch {
+    vapiPublicKey = null; // no backend — fake call stays the only option
+  }
+})();
 
 function getVapi() {
   if (!vapi) {
-    vapi = new Vapi(VAPI_PUBLIC_KEY);
+    vapi = new Vapi(vapiPublicKey);
     vapi.on("call-start", () => console.log("📞 Mummy call connected"));
     vapi.on("call-end", () => console.log("📞 Mummy call ended"));
     vapi.on("error", (e) => console.error("Vapi error:", e));
@@ -38,11 +48,12 @@ function getVapi() {
 }
 
 // Exposed for app.js (classic script) to call.
-window.vapiConfigured = () => configured;
+window.vapiConfigured = () => Boolean(vapiPublicKey);
 
 window.startMummyCall = async () => {
-  if (!configured) {
-    console.warn("Vapi public key not set in vapi.js — falling back to simulated call.");
+  await configLoaded;
+  if (!vapiPublicKey) {
+    console.warn("VAPI_PUBLIC_KEY not set in .env — falling back to simulated call.");
     return false;
   }
   let safeWord = "bestie";

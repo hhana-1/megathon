@@ -11,11 +11,15 @@
 //   body: { caller?: string, event?: "answered" | "checkin", spoken?: string[] }
 //   resp: { reply: string }
 
+require("dotenv").config();
+
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const Anthropic = require("@anthropic-ai/sdk");
-const admin = require("firebase-admin");
+const { initializeApp, cert } = require("firebase-admin/app");
+const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { getStorage } = require("firebase-admin/storage");
 
 const PORT = process.env.PORT || 4173;
 const ROOT = __dirname;
@@ -24,6 +28,11 @@ const client = new Anthropic(); // reads ANTHROPIC_API_KEY from the environment
 // Optional shared secret. If set, Vapi must send the same value in the
 // `x-vapi-secret` header (configure it on the tool's server settings in Vapi).
 const VAPI_SECRET = process.env.VAPI_SERVER_SECRET || "";
+
+// Public Web SDK key, handed to the browser so it can start a real Vapi call.
+// Safe to expose client-side (that's the point of it being "public") — but it
+// still lives in .env, not committed, so it's not sitting in git history.
+const VAPI_PUBLIC_KEY = process.env.VAPI_PUBLIC_KEY || "";
 
 // Safety flags raised by the "safe word" tool during a Vapi call.
 // In-memory + consume-once: fine for a demo. For production, persist per-user
@@ -47,11 +56,12 @@ let db = null;
 try {
   const saPath = process.env.FIREBASE_SERVICE_ACCOUNT;
   const opts = {};
-  if (saPath) opts.credential = admin.credential.cert(require(path.resolve(saPath)));
+  if (saPath) opts.credential = cert(require(path.resolve(saPath)));
   if (process.env.FIREBASE_STORAGE_BUCKET) opts.storageBucket = process.env.FIREBASE_STORAGE_BUCKET;
   if (saPath || process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    admin.initializeApp(opts); // ADC when no explicit credential
-    db = admin.firestore();
+    initializeApp(opts); // ADC when no explicit credential
+    db = getFirestore();
+    console.log("🔥 Firebase connected — incidents will be written to Firestore.");
   }
 } catch (err) {
   console.error("Firebase init failed:", err.message);
@@ -64,9 +74,36 @@ async function writeIncident(incident) {
   const ref = await db.collection("incidents").add({
     ...incident,
     status: "active",
-    createdAt: admin.firestore.FieldValue.serverTimestamp()
+    createdAt: FieldValue.serverTimestamp()
   });
   return ref.id;
+}
+
+// Persists a GPS fix (from the Location button) to Firestore, so trusted
+// contacts and incident records have a durable location trail.
+async function handleLocationSave(req, res, body) {
+  const userId = (body.userId || DEFAULT_USER).toString();
+  const lat = Number(body.lat);
+  const lng = Number(body.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return sendJson(res, 400, { error: "invalid_coordinates" });
+  }
+
+  if (!db) return sendJson(res, 200, { saved: false, reason: "firebase_not_configured" });
+
+  try {
+    const ref = await db.collection("locations").add({
+      userId,
+      lat,
+      lng,
+      at: new Date().toISOString(),
+      createdAt: FieldValue.serverTimestamp()
+    });
+    sendJson(res, 200, { saved: true, id: ref.id });
+  } catch (err) {
+    console.error("location save failed:", err.message);
+    sendJson(res, 500, { error: "save_failed" });
+  }
 }
 
 // Reach the emergency contact from the SERVER (works even if her phone is taken).
@@ -263,7 +300,7 @@ async function handleSafeWordAudio(req, res, audioBuffer) {
   if (db && process.env.FIREBASE_STORAGE_BUCKET) {
     try {
       audioPath = `safe-word-audio/${userId}-${Date.now()}.webm`;
-      await admin.storage().bucket().file(audioPath).save(audioBuffer, { contentType });
+      await getStorage().bucket().file(audioPath).save(audioBuffer, { contentType });
     } catch (err) {
       console.error("audio archive failed:", err.message);
       audioPath = null;
@@ -305,7 +342,7 @@ async function handleVapiEvents(req, res, body) {
         if (audio.ok) {
           const buf = Buffer.from(await audio.arrayBuffer());
           const storedPath = `call-recordings/${callId || Date.now()}.wav`;
-          await admin.storage().bucket().file(storedPath).save(buf, { contentType: audio.headers.get("content-type") || "audio/wav" });
+          await getStorage().bucket().file(storedPath).save(buf, { contentType: audio.headers.get("content-type") || "audio/wav" });
           rec.storedPath = storedPath;
         }
       } catch (err) {
@@ -314,7 +351,7 @@ async function handleVapiEvents(req, res, body) {
     }
     if (db) {
       try {
-        await db.collection("call_recordings").add({ ...rec, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+        await db.collection("call_recordings").add({ ...rec, createdAt: FieldValue.serverTimestamp() });
       } catch (err) {
         console.error("recording persist failed:", err.message);
       }
@@ -329,6 +366,12 @@ function handleSafeWordGet(req, res) {
   const url = new URL(req.url, "http://localhost");
   const userId = url.searchParams.get("userId") || DEFAULT_USER;
   sendJson(res, 200, { userId, safeWord: safeWords.get(userId) || null });
+}
+
+// Tells the browser the Vapi public key (vapi.js fetches this instead of
+// hardcoding it, so it never ends up committed to source).
+function handleConfig(req, res) {
+  sendJson(res, 200, { vapiPublicKey: VAPI_PUBLIC_KEY || null });
 }
 
 function sendJson(res, status, payload) {
@@ -440,6 +483,14 @@ const server = http.createServer((req, res) => {
     return handleSafeWordGet(req, res);
   }
 
+  if (req.method === "GET" && pathname === "/api/config") {
+    return handleConfig(req, res);
+  }
+
+  if (req.method === "POST" && pathname === "/api/location") {
+    return readJsonBody(req, res, (body) => handleLocationSave(req, res, body));
+  }
+
   if (req.method === "GET") return serveStatic(req, res);
 
   res.writeHead(405);
@@ -450,5 +501,8 @@ server.listen(PORT, () => {
   console.log(`Glim demo on http://localhost:${PORT}`);
   if (!process.env.ANTHROPIC_API_KEY) {
     console.warn("⚠  ANTHROPIC_API_KEY is not set — /api/mum-call will fail until you export it.");
+  }
+  if (!db) {
+    console.warn("⚠  Firebase not configured — incidents stay in-memory only (set FIREBASE_SERVICE_ACCOUNT in .env).");
   }
 });
